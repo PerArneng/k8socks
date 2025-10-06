@@ -5,7 +5,7 @@ members = [
     "crates/k8socks-config",
     "crates/k8socks-k8s",
     "crates/k8socks-ssh",
-    "crates/k8socks-logging",
+    "crates/k8socks-logging", "crates/k8socks-traits",
 ]
 
 [workspace.dependencies]

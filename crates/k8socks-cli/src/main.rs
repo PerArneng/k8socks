@@ -1,11 +1,19 @@
 use clap::{Parser, Subcommand};
-use k8socks_config::{Config, load_from_paths, expand_tilde};
-use k8socks_k8s::{K8sService, K8sServiceImpl, PodRef};
-use k8socks_logging::init_logging;
-use k8socks_ssh::{SshService, SshServiceImpl};
 use merge::Merge;
 use tokio::signal;
-use tracing::{info, warn, debug, error};
+use tracing::{debug, error, info, warn};
+
+// Import traits from the new `k8socks-traits` crate
+use k8socks_traits::config::{Config, ConfigService};
+use k8socks_traits::k8s::{K8sService, PodRef};
+use k8socks_traits::logging::LoggingService;
+use k8socks_traits::ssh::SshService;
+
+// Import concrete implementations from the other crates
+use k8socks_config::ConfigServiceImpl;
+use k8socks_k8s::K8sServiceImpl;
+use k8socks_logging::LoggingServiceImpl;
+use k8socks_ssh::SshServiceImpl;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -53,7 +61,8 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     // --- Configuration Setup ---
-    let file_config = load_from_paths()?;
+    // Use the implementation of the `ConfigService` trait
+    let file_config = ConfigServiceImpl::load_from_paths()?;
     let cli_config = Config {
         kubeconfig: cli.kubeconfig,
         context: cli.context,
@@ -73,15 +82,17 @@ async fn main() -> anyhow::Result<()> {
     config.merge(cli_config);
 
     // --- Logging ---
-    init_logging(config.log_level.as_deref().unwrap_or("info"), !cli.no_color)
+    // Use the implementation of the `LoggingService` trait
+    LoggingServiceImpl::init_logging(config.log_level.as_deref().unwrap_or("info"), !cli.no_color)
         .map_err(|e| anyhow::anyhow!("Failed to initialize logging: {}", e))?;
 
     // --- Path Expansion ---
+    // Use the implementation of the `ConfigService` trait
     if let Some(path) = config.kubeconfig.clone() {
-        config.kubeconfig = Some(expand_tilde(&path).unwrap().to_string_lossy().into_owned());
+        config.kubeconfig = Some(ConfigServiceImpl::expand_tilde(&path).unwrap().to_string_lossy().into_owned());
     }
     if let Some(path) = config.ssh_public_key_path.clone() {
-        config.ssh_public_key_path = Some(expand_tilde(&path).unwrap().to_string_lossy().into_owned());
+        config.ssh_public_key_path = Some(ConfigServiceImpl::expand_tilde(&path).unwrap().to_string_lossy().into_owned());
     }
 
     debug!("Final configuration: {:#?}", config);
@@ -98,6 +109,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // --- Main Application Logic ---
+    // Instantiate the concrete implementations of the services
     let k8s_service = K8sServiceImpl::new(&config).await?;
     let pod_ref = deploy_and_wait(&k8s_service).await?;
 
@@ -116,8 +128,9 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // Start port forwarding and the SSH proxy
-    let local_socks_port = config.local_socks_port.unwrap_or(1080);
-    let pf_handle = k8s_service.port_forward(&pod_ref, local_socks_port).await?;
+    // Let the OS pick an ephemeral port for the SSH connection
+    let pf_handle = k8s_service.port_forward(&pod_ref, 0).await?;
+    info!("Established port-forward to pod on 127.0.0.1:{}", pf_handle.local_port);
     let ssh_service = SshServiceImpl::new(&config);
     let ssh_handle = ssh_service.start_socks_proxy(pf_handle.local_port).await?;
     info!("SOCKS5 proxy is now running on 127.0.0.1:{}", config.local_socks_port.unwrap_or(1080));
@@ -146,7 +159,8 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn deploy_and_wait(k8s_service: &K8sServiceImpl) -> anyhow::Result<PodRef> {
+// Update `deploy_and_wait` to be generic over any type that implements `K8sService`
+async fn deploy_and_wait<K: K8sService>(k8s_service: &K) -> anyhow::Result<PodRef> {
     info!("Deploying SSH server pod...");
     let pod_ref = k8s_service.deploy_pod().await?;
     info!("Pod '{}' created in namespace '{}'. Waiting for it to be ready...", pod_ref.name, pod_ref.namespace);

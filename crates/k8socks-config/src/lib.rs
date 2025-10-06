@@ -1,148 +1,56 @@
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use directories::BaseDirs;
-use merge::Merge;
-use serde::Deserialize;
-use thiserror::Error;
+use k8socks_traits::config::{Config, ConfigError, ConfigService};
 
-/// A custom merge strategy for `Option<T>` fields. It overwrites the destination
-/// (`left`) with the source (`right`) only if the source is `Some`.
-fn overwrite_if_some<T>(left: &mut Option<T>, right: Option<T>) {
-    if right.is_some() {
-        *left = right;
-    }
-}
+pub struct ConfigServiceImpl;
 
-#[derive(Error, Debug)]
-pub enum ConfigError {
-    #[error("Configuration file not found at any of the expected locations")]
-    NotFound,
-    #[error("Failed to read configuration file: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("Failed to parse configuration file: {0}")]
-    Parse(#[from] serde_json::Error),
-}
+impl ConfigService for ConfigServiceImpl {
+    fn load_from_paths() -> Result<Config, ConfigError> {
+        let home_dir_path = BaseDirs::new().map(|dirs| {
+            dirs.home_dir().join(".k8socks/config.json")
+        });
 
-#[derive(Deserialize, Merge, Debug, Clone, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct PodResources {
-    #[merge(strategy = overwrite_if_some)]
-    #[serde(default)]
-    pub cpu: Option<String>,
-    #[merge(strategy = overwrite_if_some)]
-    #[serde(default)]
-    pub memory: Option<String>,
-}
+        let current_dir_path = Path::new("./config.json").to_path_buf();
 
-#[derive(Deserialize, Merge, Debug, Clone, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct Config {
-    #[merge(strategy = overwrite_if_some)]
-    #[serde(default)]
-    pub kubeconfig: Option<String>,
-    #[merge(strategy = overwrite_if_some)]
-    #[serde(default)]
-    pub context: Option<String>,
-    #[merge(strategy = overwrite_if_some)]
-    #[serde(default)]
-    pub namespace: Option<String>,
-    #[merge(strategy = overwrite_if_some)]
-    #[serde(default)]
-    pub ssh_public_key_path: Option<String>,
-    #[merge(strategy = overwrite_if_some)]
-    #[serde(default)]
-    pub ssh_username: Option<String>,
-    #[merge(strategy = overwrite_if_some)]
-    #[serde(default)]
-    pub local_socks_port: Option<u16>,
-    #[merge(strategy = overwrite_if_some)]
-    #[serde(default)]
-    pub pod_ttl_seconds: Option<u64>,
-    #[merge(strategy = overwrite_if_some)]
-    #[serde(default)]
-    pub pod_image: Option<String>,
-    #[merge(strategy = overwrite_if_some)]
-    #[serde(default)]
-    pub pod_resources: Option<PodResources>,
-    #[merge(strategy = overwrite_if_some)]
-    #[serde(default)]
-    pub pod_labels: Option<HashMap<String, String>>,
-    #[merge(strategy = overwrite_if_some)]
-    #[serde(default)]
-    pub pod_annotations: Option<HashMap<String, String>>,
-    #[merge(strategy = overwrite_if_some)]
-    #[serde(default)]
-    pub log_level: Option<String>,
-}
+        let paths_to_check = [
+            home_dir_path,
+            Some(current_dir_path)
+        ];
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            kubeconfig: Some("~/.kube/config".to_string()),
-            context: None,
-            namespace: Some("default".to_string()),
-            ssh_public_key_path: Some("~/.ssh/id_rsa.pub".to_string()),
-            ssh_username: Some("k8socks".to_string()),
-            local_socks_port: Some(1080),
-            pod_ttl_seconds: Some(900),
-            pod_image: Some("linuxserver/openssh-server:latest".to_string()),
-            pod_resources: Some(PodResources {
-                cpu: Some("50m".to_string()),
-                memory: Some("64Mi".to_string()),
-            }),
-            pod_labels: Some([("app".to_string(), "k8socks".to_string())].into()),
-            pod_annotations: Some(HashMap::new()),
-            log_level: Some("info".to_string()),
+        for path in paths_to_check.iter().flatten() {
+            if path.exists() {
+                let content = fs::read_to_string(path)?;
+                let config: Config = serde_json::from_str(&content)?;
+                return Ok(config);
+            }
         }
+
+        // If no config file is found, return a config with all `None` values.
+        Ok(Config {
+            kubeconfig: None, context: None, namespace: None,
+            ssh_public_key_path: None, ssh_username: None, local_socks_port: None,
+            pod_ttl_seconds: None, pod_image: None, pod_resources: None,
+            pod_labels: None, pod_annotations: None, log_level: None,
+        })
     }
-}
 
-/// Loads configuration from standard paths.
-pub fn load_from_paths() -> Result<Config, ConfigError> {
-    let home_dir_path = BaseDirs::new().map(|dirs| {
-        dirs.home_dir().join(".k8socks/config.json")
-    });
-
-    let current_dir_path = Path::new("./config.json").to_path_buf();
-
-    let paths_to_check = [
-        home_dir_path,
-        Some(current_dir_path)
-    ];
-
-    for path in paths_to_check.iter().flatten() {
-        if path.exists() {
-            let content = fs::read_to_string(path)?;
-            let config: Config = serde_json::from_str(&content)?;
-            return Ok(config);
+    fn expand_tilde<P: AsRef<Path>>(path: P) -> Option<PathBuf> {
+        let path = path.as_ref();
+        if !path.starts_with("~") {
+            return Some(path.to_path_buf());
         }
+
+        BaseDirs::new().map(|dirs| {
+            dirs.home_dir().join(path.strip_prefix("~").unwrap())
+        })
     }
-
-    // If no config file is found, return a config with all `None` values.
-    Ok(Config {
-        kubeconfig: None, context: None, namespace: None,
-        ssh_public_key_path: None, ssh_username: None, local_socks_port: None,
-        pod_ttl_seconds: None, pod_image: None, pod_resources: None,
-        pod_labels: None, pod_annotations: None, log_level: None,
-    })
-}
-
-/// Resolves a path that may start with `~/`.
-pub fn expand_tilde<P: AsRef<Path>>(path: P) -> Option<PathBuf> {
-    let path = path.as_ref();
-    if !path.starts_with("~") {
-        return Some(path.to_path_buf());
-    }
-
-    BaseDirs::new().map(|dirs| {
-        dirs.home_dir().join(path.strip_prefix("~").unwrap())
-    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use k8socks_traits::config::Config;
+    use merge::Merge;
 
     #[test]
     fn test_config_precedence() {
@@ -157,7 +65,16 @@ mod tests {
             namespace: Some("from-file".to_string()),
             local_socks_port: Some(9999),
             context: Some("file-context".to_string()),
-            ..Default::default()
+            // Fill in the rest with default values to satisfy the struct initialization
+            kubeconfig: None,
+            ssh_public_key_path: None,
+            ssh_username: None,
+            pod_ttl_seconds: None,
+            pod_image: None,
+            pod_resources: None,
+            pod_labels: None,
+            pod_annotations: None,
+            log_level: None,
         };
 
         // Merge file config over defaults

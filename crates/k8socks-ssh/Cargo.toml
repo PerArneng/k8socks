@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+k8socks-traits = { path = "../k8socks-traits" }
 async-trait = "0.1.89"
-k8socks-config = { version = "0.1.0", path = "../k8socks-config" }
 thiserror = "2.0.17"
-tokio.workspace = true
+tokio = "1.38.0"
 tracing = "0.1.41"

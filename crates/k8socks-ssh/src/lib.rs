@@ -1,43 +1,11 @@
 use std::process::Stdio;
 use async_trait::async_trait;
-use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::{Child, ChildStderr, ChildStdout, Command};
+use tokio::process::{Command};
 use tracing::{error, info, warn};
 
-use k8socks_config::Config;
-
-#[derive(Error, Debug)]
-pub enum SshError {
-    #[error("Failed to start SSH process: {0}")]
-    ProcessError(#[from] std::io::Error),
-    #[error("SSH process exited with a non-zero status")]
-    UnexpectedExit,
-}
-
-/// A handle to a running SSH client subprocess.
-pub struct SshProcessHandle {
-    child: Child,
-    stdout: Option<ChildStdout>,
-    stderr: Option<ChildStderr>,
-}
-
-impl Drop for SshProcessHandle {
-    fn drop(&mut self) {
-        info!("Terminating SSH SOCKS proxy process...");
-        if let Err(e) = self.child.start_kill() {
-            error!("Failed to kill SSH subprocess: {}", e);
-        }
-    }
-}
-
-/// The `SshService` trait defines the contract for managing the local SSH SOCKS proxy.
-#[async_trait]
-pub trait SshService {
-    fn new(config: &Config) -> Self;
-    async fn start_socks_proxy(&self, forwarded_ssh_port: u16) -> Result<SshProcessHandle, SshError>;
-    async fn watch(&self, handle: SshProcessHandle) -> Result<(), SshError>;
-}
+use k8socks_traits::config::Config;
+use k8socks_traits::ssh::{SshError, SshProcessHandle, SshService};
 
 pub struct SshServiceImpl {
     config: Config,
@@ -75,22 +43,21 @@ impl SshService for SshServiceImpl {
 
         info!("Spawning SSH command: {:?}", cmd);
 
-        let mut child = cmd.spawn()?;
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
+        let child = cmd.spawn()?;
 
-        Ok(SshProcessHandle { child, stdout, stderr })
+        Ok(SshProcessHandle { child })
     }
 
-    async fn watch(&self, mut handle: SshProcessHandle) -> Result<(), SshError> {
-        let stdout = handle.stdout.take().ok_or_else(|| {
+    async fn watch(&self, handle: SshProcessHandle) -> Result<(), SshError> {
+        let mut child = handle.child;
+        let stdout = child.stdout.take().ok_or_else(|| {
             SshError::ProcessError(std::io::Error::new(
                 std::io::ErrorKind::Other,
                 "Failed to capture stdout",
             ))
         })?;
 
-        let stderr = handle.stderr.take().ok_or_else(|| {
+        let stderr = child.stderr.take().ok_or_else(|| {
             SshError::ProcessError(std::io::Error::new(
                 std::io::ErrorKind::Other,
                 "Failed to capture stderr",
@@ -112,7 +79,7 @@ impl SshService for SshServiceImpl {
             }
         });
 
-        let status = handle.child.wait().await?;
+        let status = child.wait().await?;
 
         // Wait for the logging tasks to finish to ensure all output is captured.
         stdout_task.await.ok();

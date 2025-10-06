@@ -1,0 +1,26 @@
+[package]
+name = "k8socks-traits"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# For config
+directories = "6.0.0"
+merge = "0.2.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+thiserror = "2.0.17"
+
+# For k8s
+tokio = { version = "1.38.0", features = ["full"] }
+async-trait = "0.1.80"
+kube = { version = "0.93.0", features = ["runtime", "derive", "ws"] }
+k8s-openapi = { version = "0.22.0", features = ["v1_29"] }
+base64 = "0.22.1"
+rand = "0.8.5"
+
+# For logging
+colored = "2.1.0"
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = ["fmt", "env-filter"] }
+chrono = "0.4.38"

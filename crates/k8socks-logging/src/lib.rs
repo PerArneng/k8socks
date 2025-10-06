@@ -6,6 +6,7 @@ use tracing_subscriber::fmt::{FmtContext, Layer};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
+use k8socks_traits::logging::LoggingService;
 
 /// A custom event formatter that produces logs in the desired format.
 struct CustomFormatter {
@@ -52,25 +53,28 @@ where
     }
 }
 
-/// Initializes the global logger.
-pub fn init_logging(
-    level_str: &str,
-    use_color: bool,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let level = Level::from_str(level_str).unwrap_or(Level::INFO);
+pub struct LoggingServiceImpl;
 
-    let env_filter = EnvFilter::builder()
-        .with_default_directive(level.into())
-        .from_env_lossy();
+impl LoggingService for LoggingServiceImpl {
+    fn init_logging(
+        level_str: &str,
+        use_color: bool,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let level = Level::from_str(level_str).unwrap_or(Level::INFO);
 
-    let formatter = CustomFormatter { use_color };
+        let env_filter = EnvFilter::builder()
+            .with_default_directive(level.into())
+            .from_env_lossy();
 
-    let layer = Layer::default().event_format(formatter);
+        let formatter = CustomFormatter { use_color };
 
-    tracing_subscriber::registry()
-        .with(env_filter)
-        .with(layer)
-        .init();
+        let layer = Layer::default().event_format(formatter);
 
-    Ok(())
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(layer)
+            .init();
+
+        Ok(())
+    }
 }

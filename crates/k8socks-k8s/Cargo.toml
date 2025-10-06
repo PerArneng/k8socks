@@ -4,16 +4,17 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+k8socks-traits = { path = "../k8socks-traits" }
+k8socks-config = { path = "../k8socks-config" }
 async-trait = "0.1.89"
 base64 = "0.22.1"
 futures = "0.3.31"
-k8s-openapi = { version = "0.26.0", features = ["v1_30"] }
-k8socks-config = { version = "0.1.0", path = "../k8socks-config" }
-kube = { version = "2.0.1", features = ["runtime", "ws"] }
-rand = "0.9.2"
+k8s-openapi = { version = "0.22.0", features = ["v1_29"] }
+kube = { version = "0.93.0", features = ["runtime", "derive", "ws"] }
+rand = "0.8.5"
 thiserror = "2.0.17"
-tokio.workspace = true
+tokio = "1.38.0"
 
 [dev-dependencies]
 regex = "1.11.3"
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.38.0", features = ["macros", "rt-multi-thread"] }
