@@ -9,51 +9,16 @@ use k8s_openapi::api::core::v1::{
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::api::{Api, DeleteParams, PostParams};
-use kube::config::{InferConfigError, KubeconfigError};
 use kube::runtime::wait::{await_condition, conditions};
-use kube::{Client, Config as KubeConfig, Error as KubeError};
+use kube::{Client, Config as KubeConfig};
 use rand::Rng;
-use thiserror::Error;
 use tokio::io;
-use tokio::task::JoinHandle;
+use tokio::sync::oneshot;
+use tracing::error;
 
-use k8socks_config::Config;
-
-#[derive(Error, Debug)]
-pub enum K8sError {
-    #[error("Kubernetes API error: {0}")]
-    Kube(#[from] KubeError),
-    #[error("Kubernetes config error: {0}")]
-    KubeConfig(#[from] KubeconfigError),
-    #[error("Failed to infer Kubernetes config: {0}")]
-    InferConfig(#[from] InferConfigError),
-    #[error("Pod was not ready in time")]
-    PodNotReady,
-    #[error("Failed to read SSH public key at '{0}': {1}")]
-    SshKeyError(String, std::io::Error),
-    #[error("Pod was not found: {0}")]
-    PodNotFound(String),
-}
-
-#[derive(Clone, Debug)]
-pub struct PodRef {
-    pub name: String,
-    pub namespace: String,
-}
-
-pub struct PortForwardHandle {
-    pub local_port: u16,
-    _handle: JoinHandle<()>,
-}
-
-#[async_trait]
-pub trait K8sService: Clone + Send + Sync + 'static {
-    async fn new(config: &Config) -> Result<Self, K8sError> where Self: Sized;
-    async fn deploy_pod(&self) -> Result<PodRef, K8sError>;
-    async fn wait_for_pod_ready(&self, pod_ref: &PodRef) -> Result<Pod, K8sError>;
-    async fn port_forward(&self, pod_ref: &PodRef, local_port: u16) -> Result<PortForwardHandle, K8sError>;
-    async fn delete_pod(&self, pod_ref: &PodRef) -> Result<(), K8sError>;
-}
+use k8socks_config::ConfigServiceImpl;
+use k8socks_traits::config::{Config, ConfigService};
+use k8socks_traits::k8s::{K8sError, K8sService, PodRef, PortForwardHandle};
 
 #[derive(Clone)]
 pub struct K8sServiceImpl {
@@ -133,7 +98,7 @@ impl K8sService for K8sServiceImpl {
         let pods: Api<Pod> = Api::namespaced(self.client.clone(), namespace);
 
         let ssh_key_path_str = self.config.ssh_public_key_path.as_ref().unwrap();
-        let ssh_key_path = k8socks_config::expand_tilde(ssh_key_path_str).unwrap();
+        let ssh_key_path = ConfigServiceImpl::expand_tilde(ssh_key_path_str).unwrap();
         let ssh_key_content = fs::read_to_string(&ssh_key_path)
             .map_err(|e| K8sError::SshKeyError(ssh_key_path.to_string_lossy().into(), e))?;
         let ssh_key_base64 = BASE64.encode(ssh_key_content.trim());
@@ -160,21 +125,51 @@ impl K8sService for K8sServiceImpl {
         let pods: Api<Pod> = Api::namespaced(self.client.clone(), &pod_ref.namespace);
         let mut pf = pods.portforward(&pod_ref.name, &[22]).await?;
 
-        let handle = tokio::spawn(async move {
-            let mut upstream = pf.take_stream(22).expect("port 22 should be forwarded");
-            let listener = tokio::net::TcpListener::bind(("127.0.0.1", local_port))
-                .await
-                .unwrap();
+        let (tx, rx) = oneshot::channel::<Result<u16, std::io::Error>>();
 
-            if let Ok((mut downstream, _)) = listener.accept().await {
-                io::copy_bidirectional(&mut upstream, &mut downstream).await.ok();
+        let handle = tokio::spawn(async move {
+            if let Some(mut stream) = pf.take_stream(22) {
+                let listener = match tokio::net::TcpListener::bind(("127.0.0.1", local_port)).await {
+                    Ok(l) => l,
+                    Err(e) => {
+                        let _ = tx.send(Err(e));
+                        return;
+                    }
+                };
+
+                let actual_port = match listener.local_addr() {
+                    Ok(addr) => addr.port(),
+                    Err(e) => {
+                        let _ = tx.send(Err(e));
+                        return;
+                    }
+                };
+
+                if tx.send(Ok(actual_port)).is_err() {
+                    return; // Receiver dropped
+                }
+
+                if let Ok((mut downstream, _)) = listener.accept().await {
+                    if let Err(e) = io::copy_bidirectional(&mut stream, &mut downstream).await {
+                        error!("Error during port forward data transfer: {}", e);
+                    }
+                } else {
+                    error!("Failed to accept connection on forwarded port");
+                }
+            } else {
+                let e = std::io::Error::new(std::io::ErrorKind::Other, "Failed to take stream from portforward");
+                let _ = tx.send(Err(e));
             }
         });
 
-        Ok(PortForwardHandle {
-            local_port,
-            _handle: handle,
-        })
+        match rx.await {
+            Ok(Ok(bound_port)) => Ok(PortForwardHandle::new(bound_port, handle)),
+            Ok(Err(e)) => Err(K8sError::PortForwardFailed(e)),
+            Err(_) => Err(K8sError::PortForwardFailed(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Port forward task panicked or was dropped",
+            ))),
+        }
     }
 
     async fn delete_pod(&self, pod_ref: &PodRef) -> Result<(), K8sError> {
@@ -187,7 +182,6 @@ impl K8sService for K8sServiceImpl {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use k8socks_config::Config;
     use regex::Regex;
 
     #[test]

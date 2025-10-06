@@ -4,12 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+k8socks-traits = { path = "../k8socks-traits" }
 k8socks-config = { path = "../k8socks-config" }
 k8socks-k8s = { path = "../k8socks-k8s" }
 k8socks-ssh = { path = "../k8socks-ssh" }
 k8socks-logging = { path = "../k8socks-logging" }
-anyhow = { workspace = true }
-tokio = { workspace = true }
-clap = { version = "4.5.48", features = ["derive", "env"] }
+anyhow = "1.0.86"
+tokio = { version = "1.38.0", features = ["full"] }
+clap = { version = "4.5.4", features = ["derive", "env"] }
 tracing = "0.1.41"
 merge = "0.2.0"
