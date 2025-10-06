@@ -13,6 +13,8 @@ use kube::runtime::wait::{await_condition, conditions};
 use kube::{Client, Config as KubeConfig};
 use rand::Rng;
 use tokio::io;
+use tokio::sync::oneshot;
+use tracing::error;
 
 use k8socks_config::ConfigServiceImpl;
 use k8socks_traits::config::{Config, ConfigService};
@@ -123,16 +125,51 @@ impl K8sService for K8sServiceImpl {
         let pods: Api<Pod> = Api::namespaced(self.client.clone(), &pod_ref.namespace);
         let mut pf = pods.portforward(&pod_ref.name, &[22]).await?;
 
+        let (tx, rx) = oneshot::channel::<Result<u16, std::io::Error>>();
+
         let handle = tokio::spawn(async move {
             if let Some(mut stream) = pf.take_stream(22) {
-                let listener = tokio::net::TcpListener::bind(("127.0.0.1", local_port)).await.unwrap();
-                if let Ok((mut downstream, _)) = listener.accept().await {
-                    io::copy_bidirectional(&mut stream, &mut downstream).await.ok();
+                let listener = match tokio::net::TcpListener::bind(("127.0.0.1", local_port)).await {
+                    Ok(l) => l,
+                    Err(e) => {
+                        let _ = tx.send(Err(e));
+                        return;
+                    }
+                };
+
+                let actual_port = match listener.local_addr() {
+                    Ok(addr) => addr.port(),
+                    Err(e) => {
+                        let _ = tx.send(Err(e));
+                        return;
+                    }
+                };
+
+                if tx.send(Ok(actual_port)).is_err() {
+                    return; // Receiver dropped
                 }
+
+                if let Ok((mut downstream, _)) = listener.accept().await {
+                    if let Err(e) = io::copy_bidirectional(&mut stream, &mut downstream).await {
+                        error!("Error during port forward data transfer: {}", e);
+                    }
+                } else {
+                    error!("Failed to accept connection on forwarded port");
+                }
+            } else {
+                let e = std::io::Error::new(std::io::ErrorKind::Other, "Failed to take stream from portforward");
+                let _ = tx.send(Err(e));
             }
         });
 
-        Ok(PortForwardHandle::new(local_port, handle))
+        match rx.await {
+            Ok(Ok(bound_port)) => Ok(PortForwardHandle::new(bound_port, handle)),
+            Ok(Err(e)) => Err(K8sError::PortForwardFailed(e)),
+            Err(_) => Err(K8sError::PortForwardFailed(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Port forward task panicked or was dropped",
+            ))),
+        }
     }
 
     async fn delete_pod(&self, pod_ref: &PodRef) -> Result<(), K8sError> {

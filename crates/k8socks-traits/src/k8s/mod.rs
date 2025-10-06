@@ -20,6 +20,8 @@ pub enum K8sError {
     SshKeyError(String, std::io::Error),
     #[error("Pod was not found: {0}")]
     PodNotFound(String),
+    #[error("Port forwarding failed: {0}")]
+    PortForwardFailed(#[from] std::io::Error),
 }
 
 #[derive(Clone, Debug)]
