@@ -1,0 +1,10 @@
+[package]
+name = "k8socks-logging"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+chrono = "0.4.42"
+colored = "3.0.0"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter", "fmt", "time"] }

@@ -1,0 +1,15 @@
+[package]
+name = "k8socks-k8s"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+async-trait = "0.1.89"
+base64 = "0.22.1"
+futures = "0.3.31"
+k8s-openapi = { version = "0.26.0", features = ["v1_30"] }
+k8socks-config = { version = "0.1.0", path = "../k8socks-config" }
+kube = { version = "2.0.1", features = ["runtime", "ws"] }
+rand = "0.9.2"
+thiserror = "2.0.17"
+tokio.workspace = true
